@@ -1,96 +1,148 @@
-# api-students — Dokumentasi API
+# api-students — REST API Mahasiswa (PostgreSQL + Repository Pattern)
 
-REST API sederhana untuk mengelola data mahasiswa, dibangun pakai [Fiber](https://gofiber.io/) (Go).
+REST API untuk data mahasiswa. Sejak revisi ini, data tersimpan permanen di **PostgreSQL**
+lewat pola **repository** (bukan lagi slice di memori).
 
-**Base URL (lokal):** `http://localhost:3000`
+## Struktur Proyek
 
-## Amplop Respons
-
-Seluruh endpoint — sukses maupun gagal — selalu mengembalikan bentuk JSON yang sama:
-
-```json
-{
-  "success": true,
-  "message": "Pesan singkat status operasi",
-  "data": "isi data (opsional, tergantung endpoint)",
-  "meta": "info tambahan seperti paginasi (opsional, cuma ada di GET list)"
-}
+```
+api-students/
+├── app/
+│   ├── model/
+│   │   └── student.go          struct entitas, request, respons, ListQuery
+│   └── repository/
+│       └── student_repository.go   kontrak (interface) & implementasi PostgreSQL
+├── config/
+│   └── env.go                  memuat variabel environment dari .env
+├── database/
+│   └── postgres.go             connection pool ke PostgreSQL + Ping
+├── migrations/
+│   └── 001_create_students.sql skema tabel students
+├── .env                        konfigurasi lokal (JANGAN di-commit, sudah di .gitignore)
+├── .env.example                daftar variabel yang perlu diisi (aman di-commit)
+├── main.go                     perakitan pool → repository → handler, routing
+├── handler.go                  logika tiap endpoint (memakai repository)
+└── helper.go                   response helper, parsing query, middleware
 ```
 
-Kalau gagal, `success` bernilai `false`, `data` biasanya `null` atau berisi rincian error (khusus 422), dan field `meta` tidak muncul.
+## Skema Tabel `students`
 
-## Kontrak API
+| Kolom | Tipe | Keterangan |
+|---|---|---|
+| `id` | `SERIAL PRIMARY KEY` | ID internal, auto-increment |
+| `nim` | `VARCHAR(20) NOT NULL` | Nomor Induk Mahasiswa, **unik** (lihat indeks di bawah) |
+| `name` | `VARCHAR(100) NOT NULL` | Nama mahasiswa |
+| `grade` | `NUMERIC(3,2) NOT NULL DEFAULT 0` | Nilai/IPK, 0.00–4.00 |
+| `is_active` | `BOOLEAN NOT NULL DEFAULT TRUE` | Status keaktifan |
+| `created_at` | `TIMESTAMPTZ NOT NULL DEFAULT NOW()` | Waktu data dibuat |
 
-| Metode | Endpoint | Parameter | Contoh Body Permintaan | Status yang Mungkin | Contoh Respons |
-|---|---|---|---|---|---|
-| **GET** | `/api/v1/students` | Query (semua opsional): `page` (default `1`), `limit` (default `10`, maks `100`), `search` (nama, tidak case-sensitive), `sort` (`id`\|`nim`\|`name`\|`grade`), `order` (`asc`\|`desc`), `is_active` (`true`\|`false`), `grade_min`, `grade_max` (angka) | — (tidak ada body) | `200` sukses · `400` nilai query tidak valid (mis. `sort` di luar whitelist, `is_active` bukan boolean) | `{"success":true,"message":"Berhasil mengambil daftar mahasiswa","data":[{"id":1,"nim":"2024001","name":"Cia","grade":3.45,"is_active":true}],"meta":{"page":1,"limit":10,"total":4,"total_pages":1}}` |
-| **GET** | `/api/v1/students/:id` | Path: `id` (integer) | — (tidak ada body) | `200` sukses · `400` id bukan angka · `404` data tidak ditemukan | `{"success":true,"message":"Berhasil mengambil data mahasiswa","data":{"id":1,"nim":"2024001","name":"Cia","grade":3.45,"is_active":true}}` |
-| **POST** | `/api/v1/students` | Header wajib: `Content-Type: application/json` | `{"nim":"2024100","name":"Rani","grade":3.6,"is_active":true}` (semua field wajib diisi) | `201` sukses (+ header `Location`) · `400` body bukan JSON yang sah · `409` NIM sudah dipakai · `415` Content-Type bukan `application/json` · `422` validasi field gagal | `{"success":true,"message":"Mahasiswa baru berhasil ditambahkan","data":{"id":5,"nim":"2024100","name":"Rani","grade":3.6,"is_active":true}}` |
-| **PUT** | `/api/v1/students/:id` | Path: `id` (integer). Header wajib: `Content-Type: application/json` | `{"nim":"2024001","name":"Cia Updated","grade":4.0,"is_active":false}` (mengganti SELURUH field, semua wajib diisi) | `200` sukses · `400` id bukan angka / body bukan JSON · `404` data tidak ditemukan · `409` NIM sudah dipakai mahasiswa lain · `415` Content-Type salah · `422` validasi field gagal | `{"success":true,"message":"Data mahasiswa berhasil diperbarui","data":{"id":1,"nim":"2024001","name":"Cia Updated","grade":4,"is_active":false}}` |
-| **PATCH** | `/api/v1/students/:id` | Path: `id` (integer). Header wajib: `Content-Type: application/json` | `{"grade":2.75}` (hanya field yang dikirim yang diperbarui, sisanya tidak berubah) | `200` sukses · `400` id bukan angka / body bukan JSON · `404` data tidak ditemukan · `409` NIM (jika dikirim) sudah dipakai mahasiswa lain · `415` Content-Type salah · `422` validasi field gagal | `{"success":true,"message":"Data mahasiswa berhasil diperbarui sebagian","data":{"id":1,"nim":"2024001","name":"Cia Updated","grade":2.75,"is_active":false}}` |
-| **DELETE** | `/api/v1/students/:id` | Path: `id` (integer) | — (tidak ada body) | `204` sukses (tanpa body) · `400` id bukan angka · `404` data tidak ditemukan | *(kosong, hanya status `204 No Content`)* |
+**Indeks:**
+- `students_nim_lower_key` — `UNIQUE INDEX` pada `LOWER(nim)`. Menjaga keunikan NIM tanpa
+  membedakan huruf besar/kecil, **di level basis data**, bukan cuma di kode Go. Ini penting
+  karena basis data yang memutuskan siapa lebih dulu kalau dua request datang nyaris
+  bersamaan (race condition) — pengecekan manual di Go ("SELECT dulu, baru INSERT") selalu
+  punya celah waktu di antara dua langkah itu.
+- `students_grade_idx` — indeks B-tree biasa pada `grade`. Dipakai untuk mempercepat filter
+  rentang nilai (`grade_min`, `grade_max`) dan pengurutan (`?sort=grade`), supaya PostgreSQL
+  tidak perlu memindai seluruh tabel (*sequential scan*) tiap kali query semacam itu dijalankan.
 
-## Contoh Respons Gagal (per Status Code)
+## Cara Setup dari Nol
 
-Supaya lebih jelas, berikut contoh nyata tiap status error, hasil pengujian langsung:
+Asumsikan pembaca baru saja meng-*clone* repositori ini dan **belum punya apa-apa** selain Go dan PostgreSQL ter-install.
 
-**400 — id bukan angka**
-```json
-{"success":false,"message":"ID harus berupa angka"}
+**1. Buat database kosong**
+```bash
+psql -U postgres -c "CREATE DATABASE praktikum_backend;"
 ```
 
-**400 — body bukan JSON yang sah**
-```json
-{"success":false,"message":"Body bukan JSON yang sah"}
+**2. Jalankan migrasi**
+```bash
+psql -U postgres -d praktikum_backend -f migrations/001_create_students.sql
 ```
 
-**404 — data tidak ditemukan**
-```json
-{"success":false,"message":"Mahasiswa dengan ID tersebut tidak ditemukan"}
+**3. Salin dan isi berkas environment**
+```bash
+cp .env.example .env
 ```
+Buka `.env`, isi sesuai kredensial PostgreSQL di komputer kamu (lihat tabel variabel di bawah).
 
-**409 — NIM sudah dipakai (konflik)**
-```json
-{"success":false,"message":"NIM sudah terdaftar pada mahasiswa lain"}
-```
-
-**415 — Content-Type bukan application/json**
-```json
-{"success":false,"message":"Content-Type harus application/json"}
-```
-
-**422 — validasi field gagal (rincian per field)**
-```json
-{
-  "success": false,
-  "message": "Validasi gagal, periksa kembali field yang dikirim",
-  "data": {
-    "errors": [
-      {"field": "name", "message": "Name wajib diisi"},
-      {"field": "grade", "message": "Grade harus di antara 0 dan 4"}
-    ]
-  }
-}
-```
-
-## Query String pada GET /api/v1/students (Detail)
-
-| Param | Tipe | Default | Keterangan |
-|---|---|---|---|
-| `page` | integer | `1` | Halaman ke berapa |
-| `limit` | integer | `10` | Jumlah data per halaman, maksimal `100` (dibatasi supaya server tidak dipaksa mengirim payload raksasa dalam satu request) |
-| `search` | string | – | Mencari substring pada `name`, tidak membedakan huruf besar/kecil |
-| `sort` | string | `id` | Field pengurutan. Whitelist: `id`, `nim`, `name`, `grade` |
-| `order` | string | `asc` | `asc` atau `desc` |
-| `is_active` | boolean | – | Filter berdasarkan status aktif |
-| `grade_min` | number | – | Filter nilai minimum (inklusif) |
-| `grade_max` | number | – | Filter nilai maksimum (inklusif) |
-
-## Menjalankan Secara Lokal
-
+**4. Install dependency & jalankan**
 ```bash
 go mod tidy
 go run .
 ```
 
-Server berjalan di `http://localhost:3000`.
+Server berjalan di `http://localhost:3000` (atau sesuai `APP_PORT` di `.env`).
+
+**5. Verifikasi**
+```bash
+curl http://localhost:3000/api/v1/health
+```
+Kalau hasilnya `{"success":true,"message":"server dan database berjalan"}`, setup sudah benar.
+
+## Variabel Environment
+
+| Variabel | Wajib? | Contoh | Keterangan |
+|---|---|---|---|
+| `APP_PORT` | Tidak (default `3000`) | `3000` | Port server Fiber |
+| `DB_HOST` | Ya | `localhost` | Host PostgreSQL |
+| `DB_PORT` | Tidak (default `5432`) | `5432` | Port PostgreSQL |
+| `DB_USER` | Ya | `postgres` | Username PostgreSQL |
+| `DB_PASSWORD` | Ya | `rahasia123` | Password PostgreSQL — **jangan pernah commit nilai asli ini** |
+| `DB_NAME` | Ya | `praktikum_backend` | Nama database |
+| `DB_SSLMODE` | Tidak (default `disable`) | `disable` | `disable` untuk lokal; pakai `require` di server produksi |
+| `DB_MAX_CONNS` | Tidak (default `10`) | `10` | Jumlah maksimum koneksi dalam connection pool |
+
+Berkas `.env` **tidak ikut ter-commit** (sudah masuk `.gitignore`). Yang di-commit hanya
+`.env.example` berisi nama variabel dengan nilai kosong, supaya rekan yang meng-*clone*
+tahu variabel apa saja yang perlu diisi tanpa pernah melihat kredensial asli.
+
+## Endpoint
+
+Base path: `/api/v1`
+
+| Metode | Endpoint | Keterangan |
+|---|---|---|
+| GET | `/health` | Cek kesehatan server **dan** koneksi database |
+| GET | `/students` | Daftar mahasiswa (paginasi, search, sort, filter — lihat query string) |
+| GET | `/students/:id` | Satu mahasiswa |
+| POST | `/students` | Tambah mahasiswa baru |
+| PUT | `/students/:id` | Ganti seluruh data (semua field wajib) |
+| PATCH | `/students/:id` | Ubah sebagian data (hanya field yang dikirim) |
+| DELETE | `/students/:id` | Hapus mahasiswa |
+
+### Query String pada GET /students
+
+| Param | Default | Keterangan |
+|---|---|---|
+| `page` | `1` | Halaman ke berapa |
+| `limit` | `10` | Baris per halaman, maksimal `100` |
+| `search` | – | Cari substring pada `name`, dieksekusi via `ILIKE` (tidak case-sensitive) |
+| `sort` | `id` | Whitelist: `id`, `nim`, `name`, `grade` |
+| `order` | `asc` | `asc` atau `desc` |
+| `is_active` | – | `true` / `false` |
+| `grade_min`, `grade_max` | – | Rentang nilai, inklusif |
+
+### Status HTTP yang Dikembalikan
+
+| Status | Situasi |
+|---|---|
+| 200 | Berhasil ambil / ubah data |
+| 201 | Berhasil tambah data (+ header `Location`) |
+| 204 | Berhasil hapus data (tanpa body) |
+| 400 | id bukan angka, body bukan JSON valid, atau PATCH tanpa field apa pun |
+| 404 | Data tidak ditemukan (`repository.ErrNotFound` dari `pgx.ErrNoRows` atau `RowsAffected == 0`) |
+| 409 | NIM sudah dipakai mahasiswa lain (`repository.ErrDuplicate` dari kode PostgreSQL `23505`) |
+| 415 | Content-Type request bukan `application/json` |
+| 422 | Validasi field gagal (rincian per field di `data.errors`) |
+| 500 | Error tak terduga dari database saat memproses request CRUD |
+| 503 | `GET /health` gagal melakukan `Ping()` ke database |
+
+**Catatan soal 500 vs 503 saat database mati:** endpoint `/health` secara eksplisit
+memanggil `pool.Ping()` dan mengembalikan **503 Service Unavailable** — status yang secara
+semantik memang berarti "server hidup, tapi layanan di baliknya sedang tidak tersedia".
+Endpoint CRUD lain (`/students`, dst) tidak melakukan pengecekan khusus; begitu query gagal
+karena database mati, error itu jatuh ke jalur default dan dikembalikan sebagai
+**500 Internal Server Error** — status generik untuk "server gagal memproses request karena
+alasan di sisi server". Keduanya sudah teruji: mematikan PostgreSQL lalu memanggil `/health`
+menghasilkan 503, sedangkan memanggil `/students` pada kondisi yang sama menghasilkan 500.
