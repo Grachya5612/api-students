@@ -5,3 +5,5 @@
 *.out
 body.json
 bad.txt
+logs/ 
+.env 
