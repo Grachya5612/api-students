@@ -56,11 +56,12 @@ func (q ListQuery) Offset() int {
 }
 
 // Response adalah amplop seragam untuk seluruh endpoint, sukses maupun gagal.
-type Response struct {
+type WebResponse struct {
 	Success bool        `json:"success"`
 	Message string      `json:"message"`
 	Data    interface{} `json:"data,omitempty"`
 	Meta    interface{} `json:"meta,omitempty"`
+	Errors  interface{} `json:"errors,omitempty"`
 }
 
 // Meta berisi info paginasi pada response daftar mahasiswa.
