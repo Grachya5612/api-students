@@ -2,55 +2,68 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
-
 	"api-students/app/repository"
+	"api-students/app/service"
 	"api-students/config"
 	"api-students/database"
 )
 
+// main hanya berisi urutan perakitan. Tidak ada logika bisnis,
+// tidak ada query, dan tidak ada satu pun handler di sini.
 func main() {
-	// 1. Konfigurasi
+	// 1. Konfigurasi dan logger
 	config.LoadEnv()
+	logger := config.NewLogger()
 
-	// 2. Koneksi basis data (connection pool)
+	// 2. Database
 	pool, err := database.NewPool(context.Background())
 	if err != nil {
-		log.Fatalf("database: %v", err)
+		logger.Error("gagal terhubung ke database",
+			slog.String("error", err.Error()))
+		os.Exit(1)
 	}
 	defer pool.Close()
 
-	// 3. Perakitan: pool -> repository -> handler
-	studentRepository := repository.NewStudentRepository(pool)
-	studentHandler := NewStudentHandler(studentRepository)
+	// 3. Perakitan dari dalam ke luar: repository -> service
+	userRepository := repository.NewUserRepository(pool)
+	userService := service.NewUserService(userRepository)
 
 	// 4. Aplikasi
-	app := fiber.New()
-
-	api := app.Group("/api/v1")
-
-	// Endpoint kesehatan sekarang ikut memeriksa basis data, bukan cuma
-	// memastikan server Fiber-nya hidup.
-	api.Get("/health", func(c *fiber.Ctx) error {
-		ctx, cancel := context.WithTimeout(c.UserContext(), 2*time.Second)
-		defer cancel()
-		if err := pool.Ping(ctx); err != nil {
-			return fail(c, fiber.StatusServiceUnavailable, "database tidak dapat dihubungi")
-		}
-		return ok(c, "server dan database berjalan", nil)
-	})
-
-	s := api.Group("/students", requireJSON)
-	s.Get("/", studentHandler.List)
-	s.Get("/:id", studentHandler.Get)
-	s.Post("/", studentHandler.Create)
-	s.Put("/:id", studentHandler.Replace)
-	s.Patch("/:id", studentHandler.Patch)
-	s.Delete("/:id", studentHandler.Delete)
+	app := config.NewApp(logger, pool, userService)
 
 	port := config.GetEnv("APP_PORT", "3000")
-	log.Fatal(app.Listen(":" + port))
+
+	go func() {
+		if err := app.Listen(":" + port); err != nil {
+			logger.Error("server berhenti",
+				slog.String("error", err.Error()))
+			os.Exit(1)
+		}
+	}()
+
+	logger.Info("server berjalan", slog.String("port", port))
+
+	// 5. Graceful shutdown: tunggu Ctrl+C, lalu beri waktu request
+	//    yang sedang berjalan untuk selesai.
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+
+	logger.Info("sinyal berhenti diterima, menutup server")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := app.ShutdownWithContext(ctx); err != nil {
+		logger.Error("gagal menutup server dengan rapi",
+			slog.String("error", err.Error()))
+	}
+
+	logger.Info("server berhenti dengan rapi")
 }
