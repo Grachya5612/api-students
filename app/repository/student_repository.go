@@ -80,7 +80,7 @@ func (r *studentPostgresRepository) FindAll(
 	}
 	sortCol, ok := sortWhitelist[q.Sort]
 	if !ok {
-		sortCol = "id" 
+		sortCol = "id"
 	}
 
 	sqlText := fmt.Sprintf(
@@ -122,7 +122,7 @@ func (r *studentPostgresRepository) FindByID(
 		 FROM students WHERE id = $1`, id,
 	).Scan(&s.ID, &s.NIM, &s.Name, &s.Grade, &s.IsActive, &s.CreatedAt)
 	if err != nil {
-	
+
 		if errors.Is(err, pgx.ErrNoRows) {
 			return model.Student{}, ErrNotFound
 		}
@@ -134,7 +134,7 @@ func (r *studentPostgresRepository) FindByID(
 func (r *studentPostgresRepository) Create(
 	ctx context.Context, s model.Student,
 ) (model.Student, error) {
-	
+
 	err := r.pool.QueryRow(ctx,
 		`INSERT INTO students (nim, name, grade, is_active)
 		 VALUES ($1, $2, $3, $4)
