@@ -15,6 +15,7 @@ import (
 type UserRepository interface {
 	FindAll(ctx context.Context, q model.ListQuery) ([]model.User, int, error)
 	FindByID(ctx context.Context, id int) (model.User, error)
+	FindByUsername(ctx context.Context, username string) (model.User, error)
 	Create(ctx context.Context, user model.User) (model.User, error)
 	Update(ctx context.Context, user model.User) (model.User, error)
 	Delete(ctx context.Context, id int) error
@@ -166,6 +167,29 @@ func (r *userRepository) FindByID(
 	}
 
 	return user, nil
+}
+
+// FindByUsername dipakai saat login. Pencocokan tidak membedakan
+// huruf besar dan kecil, sama seperti unique index-nya.
+func (r *userRepository) FindByUsername(
+    ctx context.Context, username string,
+) (model.User, error) {
+    var u model.User
+ 
+    err := r.pool.QueryRow(ctx,
+        `SELECT id, username, email, password, role, is_active, created_at
+         FROM users WHERE LOWER(username) = LOWER($1)`, username,
+    ).Scan(&u.ID, &u.Username, &u.Email, &u.Password, &u.Role,
+        &u.IsActive, &u.CreatedAt)
+ 
+    if err != nil {
+        if errors.Is(err, pgx.ErrNoRows) {
+            return model.User{}, ErrNotFound
+        }
+        return model.User{}, fmt.Errorf("mengambil user: %w", err)
+    }
+ 
+    return u, nil
 }
 
 // Create membuat user baru.
