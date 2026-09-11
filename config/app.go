@@ -15,15 +15,28 @@ import (
 // NewApp merakit aplikasi: membuat instance Fiber, memasang middleware,
 // lalu mendaftarkan route. File ini adalah tempat seluruh bagian bertemu.
 func NewApp(
-	logger *slog.Logger, pool *pgxpool.Pool, userService *service.UserService,
+	logger *slog.Logger,
+	pool *pgxpool.Pool,
+	userService *service.UserService,
+	jwtManager *helper.JWTManager,
+	authService *service.AuthService,
 ) *fiber.App {
 	app := fiber.New(fiber.Config{
 		AppName:      GetEnv("APP_NAME", "Praktikum Backend Lanjut"),
 		ErrorHandler: newErrorHandler(logger),
+
+		// Membatasi ukuran body mencegah satu request besar menghabiskan
+		// memori server (denial of service yang paling murah dilakukan).
+		BodyLimit: 1 * 1024 * 1024, // 1 MB
 	})
 
-	middleware.Register(app, logger)
-	route.Register(app, pool, userService)
+	middleware.Register(app, logger, GetEnv("ALLOWED_ORIGINS", ""))
+	route.Register(app, route.Dependencies{
+		Pool:        pool,
+		JWT:         jwtManager,
+		UserService: userService,
+		AuthService: authService,
+	})
 
 	// Penampung terakhir untuk URL yang tidak dikenal.
 	app.Use(func(c *fiber.Ctx) error {
