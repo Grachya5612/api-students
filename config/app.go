@@ -4,9 +4,7 @@ import (
 	"log/slog"
 
 	"github.com/gofiber/fiber/v2"
-	"github.com/jackc/pgx/v5/pgxpool"
 
-	"api-students/app/service"
 	"api-students/helper"
 	"api-students/middleware"
 	"api-students/route"
@@ -16,11 +14,9 @@ import (
 // lalu mendaftarkan route. File ini adalah tempat seluruh bagian bertemu.
 func NewApp(
 	logger *slog.Logger,
-	pool *pgxpool.Pool,
-	userService *service.UserService,
-	jwtManager *helper.JWTManager,
-	authService *service.AuthService,
+	deps route.Dependencies,
 ) *fiber.App {
+
 	app := fiber.New(fiber.Config{
 		AppName:      GetEnv("APP_NAME", "Praktikum Backend Lanjut"),
 		ErrorHandler: newErrorHandler(logger),
@@ -30,17 +26,21 @@ func NewApp(
 		BodyLimit: 1 * 1024 * 1024, // 1 MB
 	})
 
-	middleware.Register(app, logger, GetEnv("ALLOWED_ORIGINS", ""))
-	route.Register(app, route.Dependencies{
-		Pool:        pool,
-		JWT:         jwtManager,
-		UserService: userService,
-		AuthService: authService,
-	})
+	middleware.Register(
+		app,
+		logger,
+		GetEnv("ALLOWED_ORIGINS", ""),
+	)
+
+	route.Register(app, deps)
 
 	// Penampung terakhir untuk URL yang tidak dikenal.
 	app.Use(func(c *fiber.Ctx) error {
-		return helper.Fail(c, fiber.StatusNotFound, "endpoint tidak ditemukan")
+		return helper.Fail(
+			c,
+			fiber.StatusNotFound,
+			"endpoint tidak ditemukan",
+		)
 	})
 
 	return app
@@ -58,7 +58,8 @@ func newErrorHandler(logger *slog.Logger) fiber.ErrorHandler {
 			message = e.Message
 		}
 
-		logger.Error("unhandled_error",
+		logger.Error(
+			"unhandled_error",
 			slog.String("path", c.Path()),
 			slog.Int("status", status),
 			slog.String("error", err.Error()),
