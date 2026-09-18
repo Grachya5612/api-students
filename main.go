@@ -13,6 +13,7 @@ import (
 	"api-students/config"
 	"api-students/database"
 	"api-students/helper"
+	"api-students/route"
 )
 
 const minSecretLength = 32
@@ -57,21 +58,61 @@ func main() {
 	// 4. Repository
 	userRepository := repository.NewUserRepository(pool)
 	tokenRepository := repository.NewTokenRepository(pool)
+	roleRepository := repository.NewRoleRepository(pool)
+	studentRepository := repository.NewStudentRepository(pool)
+
+	// Pemetaan role ke permission dibaca SEKALI saat aplikasi menyala.
+	// Konsekuensinya: perubahan hak akses di database baru berlaku setelah
+	// aplikasi dijalankan ulang. Itu keputusan sadar, bukan kelalaian.
+	rawPermissions, err := roleRepository.LoadPermissions(context.Background())
+	if err != nil {
+		logger.Error(
+			"gagal memuat permission",
+			slog.String("error", err.Error()),
+		)
+		os.Exit(1)
+	}
+
+	permissions := helper.NewPermissionSet(rawPermissions)
+
+	logger.Info(
+		"permission dimuat",
+		slog.Any("roles", permissions.KnownRoles()),
+	)
 
 	// 5. Service
-	userService := service.NewUserService(userRepository)
+	userService := service.NewUserService(
+		userRepository,
+		permissions,
+	)
+
+	studentService := service.NewStudentService(
+		studentRepository,
+		permissions,
+	)
 
 	authService := service.NewAuthService(
 		userRepository,
 		tokenRepository,
 		jwtManager,
+		permissions,
 		time.Duration(
 			config.GetEnvInt("JWT_REFRESH_TTL_DAYS", 7),
 		)*24*time.Hour,
 	)
 
 	// 6. Aplikasi
-	app := config.NewApp(logger, pool, userService, jwtManager, authService)
+	app := config.NewApp(
+		logger,
+		route.Dependencies{
+			Pool:           pool,
+			JWT:            jwtManager,
+			Permissions:    permissions,
+			UserService:    userService,
+			StudentService: studentService,
+			AuthService:    authService,
+		},
+	)
 
 	// 7. Server
 	port := config.GetEnv("APP_PORT", "3000")
