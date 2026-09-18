@@ -18,6 +18,7 @@ type UserRepository interface {
 	FindByUsername(ctx context.Context, username string) (model.User, error)
 	Create(ctx context.Context, user model.User) (model.User, error)
 	Update(ctx context.Context, user model.User) (model.User, error)
+	UpdateRole(ctx context.Context, id int, role string) (model.User, error)
 	Delete(ctx context.Context, id int) error
 }
 
@@ -34,7 +35,6 @@ func (r *userRepository) FindAll(
 	ctx context.Context,
 	q model.ListQuery,
 ) ([]model.User, int, error) {
-
 	where := " WHERE 1 = 1"
 	args := []any{}
 
@@ -88,7 +88,7 @@ func (r *userRepository) FindAll(
 	}
 
 	query := fmt.Sprintf(`
-		SELECT id, username, email, password, is_active, created_at
+		SELECT id, username, email, password, role, is_active, created_at
 		FROM users
 		%s
 		ORDER BY %s %s
@@ -119,6 +119,7 @@ func (r *userRepository) FindAll(
 			&user.Username,
 			&user.Email,
 			&user.Password,
+			&user.Role,
 			&user.IsActive,
 			&user.CreatedAt,
 		); err != nil {
@@ -140,9 +141,8 @@ func (r *userRepository) FindByID(
 	ctx context.Context,
 	id int,
 ) (model.User, error) {
-
 	query := `
-		SELECT id, username, email, password, is_active, created_at
+		SELECT id, username, email, password, role, is_active, created_at
 		FROM users
 		WHERE id = $1
 	`
@@ -154,6 +154,7 @@ func (r *userRepository) FindByID(
 		&user.Username,
 		&user.Email,
 		&user.Password,
+		&user.Role,
 		&user.IsActive,
 		&user.CreatedAt,
 	)
@@ -172,24 +173,36 @@ func (r *userRepository) FindByID(
 // FindByUsername dipakai saat login. Pencocokan tidak membedakan
 // huruf besar dan kecil, sama seperti unique index-nya.
 func (r *userRepository) FindByUsername(
-    ctx context.Context, username string,
+	ctx context.Context,
+	username string,
 ) (model.User, error) {
-    var u model.User
- 
-    err := r.pool.QueryRow(ctx,
-        `SELECT id, username, email, password, role, is_active, created_at
-         FROM users WHERE LOWER(username) = LOWER($1)`, username,
-    ).Scan(&u.ID, &u.Username, &u.Email, &u.Password, &u.Role,
-        &u.IsActive, &u.CreatedAt)
- 
-    if err != nil {
-        if errors.Is(err, pgx.ErrNoRows) {
-            return model.User{}, ErrNotFound
-        }
-        return model.User{}, fmt.Errorf("mengambil user: %w", err)
-    }
- 
-    return u, nil
+	var u model.User
+
+	err := r.pool.QueryRow(
+		ctx,
+		`SELECT id, username, email, password, role, is_active, created_at
+		 FROM users
+		 WHERE LOWER(username) = LOWER($1)`,
+		username,
+	).Scan(
+		&u.ID,
+		&u.Username,
+		&u.Email,
+		&u.Password,
+		&u.Role,
+		&u.IsActive,
+		&u.CreatedAt,
+	)
+
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return model.User{}, ErrNotFound
+		}
+
+		return model.User{}, fmt.Errorf("mengambil user: %w", err)
+	}
+
+	return u, nil
 }
 
 // Create membuat user baru.
@@ -197,11 +210,10 @@ func (r *userRepository) Create(
 	ctx context.Context,
 	user model.User,
 ) (model.User, error) {
-
 	query := `
 		INSERT INTO users (username, email, password, is_active)
 		VALUES ($1, $2, $3, $4)
-		RETURNING id, username, email, password, is_active, created_at
+		RETURNING id, username, email, password, role, is_active, created_at
 	`
 
 	var result model.User
@@ -218,6 +230,7 @@ func (r *userRepository) Create(
 		&result.Username,
 		&result.Email,
 		&result.Password,
+		&result.Role,
 		&result.IsActive,
 		&result.CreatedAt,
 	)
@@ -240,14 +253,13 @@ func (r *userRepository) Update(
 	ctx context.Context,
 	user model.User,
 ) (model.User, error) {
-
 	query := `
 		UPDATE users
 		SET username = $1,
 			email = $2,
 			is_active = $3
 		WHERE id = $4
-		RETURNING id, username, email, password, is_active, created_at
+		RETURNING id, username, email, password, role, is_active, created_at
 	`
 
 	var result model.User
@@ -264,6 +276,7 @@ func (r *userRepository) Update(
 		&result.Username,
 		&result.Email,
 		&result.Password,
+		&result.Role,
 		&result.IsActive,
 		&result.CreatedAt,
 	)
@@ -274,6 +287,7 @@ func (r *userRepository) Update(
 		}
 
 		var pgErr *pgconn.PgError
+
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 			return model.User{}, ErrDuplicate
 		}
@@ -284,12 +298,54 @@ func (r *userRepository) Update(
 	return result, nil
 }
 
+// UpdateRole sengaja dipisah dari Update. Mengubah role adalah tindakan
+// istimewa yang dijaga permission tersendiri, sehingga tidak boleh ikut
+// terbawa oleh endpoint perubahan data biasa.
+func (r *userRepository) UpdateRole(
+	ctx context.Context,
+	id int,
+	role string,
+) (model.User, error) {
+	query := `
+		UPDATE users
+		SET role = $1
+		WHERE id = $2
+		RETURNING id, username, email, password, role, is_active, created_at
+	`
+
+	var updated model.User
+
+	err := r.pool.QueryRow(
+		ctx,
+		query,
+		role,
+		id,
+	).Scan(
+		&updated.ID,
+		&updated.Username,
+		&updated.Email,
+		&updated.Password,
+		&updated.Role,
+		&updated.IsActive,
+		&updated.CreatedAt,
+	)
+
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return model.User{}, ErrNotFound
+		}
+
+		return model.User{}, fmt.Errorf("mengubah role user: %w", err)
+	}
+
+	return updated, nil
+}
+
 // Delete menghapus user berdasarkan ID.
 func (r *userRepository) Delete(
 	ctx context.Context,
 	id int,
 ) error {
-
 	query := `
 		DELETE FROM users
 		WHERE id = $1
