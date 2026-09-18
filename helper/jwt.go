@@ -74,6 +74,8 @@ func (m *JWTManager) Parse(tokenString string) (model.AuthUser, error) {
         jwt.WithIssuer(m.issuer),
         jwt.WithExpirationRequired(),
     )
+
+    fmt.Printf("JWT PARSE ERROR: %v\n", err)
  
     if err != nil {
         if errors.Is(err, jwt.ErrTokenExpired) {
