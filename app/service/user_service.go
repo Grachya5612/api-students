@@ -16,12 +16,16 @@ import (
 // mata kuliah ini: menerima *fiber.Ctx (peran controller) dan menjalankan
 // business rules (peran use case).
 type UserService struct {
-	repo repository.UserRepository
+	repo  repository.UserRepository
+	perms *helper.PermissionSet
 }
 
 // NewUserService menerima INTERFACE, bukan struct konkret.
-func NewUserService(repo repository.UserRepository) *UserService {
-	return &UserService{repo: repo}
+func NewUserService(
+	repo repository.UserRepository,
+	perms *helper.PermissionSet,
+) *UserService {
+	return &UserService{repo: repo, perms: perms}
 }
 
 func (s *UserService) List(c *fiber.Ctx) error {
@@ -44,14 +48,27 @@ func (s *UserService) List(c *fiber.Ctx) error {
 	})
 }
 
+// ---------- GET /users/:id ----------
 func (s *UserService) Get(c *fiber.Ctx) error {
 	ctx, cancel := helper.RequestContext(c)
 	defer cancel()
 
+	current, ok := helper.CurrentUser(c)
+	if !ok {
+		return helper.Fail(c, fiber.StatusUnauthorized, "belum terautentikasi")
+	}
+
 	id, valid := helper.ParamID(c)
 	if !valid {
-		return helper.Fail(c, fiber.StatusBadRequest,
-			"id harus berupa angka positif")
+		return helper.Fail(c, fiber.StatusBadRequest, "id harus berupa angka positif")
+	}
+
+	// Pemeriksaan hak akses dilakukan SEBELUM data diambil.
+	// Bila dibalik, penyerang tetap dapat menyimpulkan keberadaan sebuah id
+	// dari perbedaan waktu tanggap antara 403 dan 404.
+	if !CanAccessUser(current, id, s.perms, "user:read:any") {
+		return helper.Fail(c, fiber.StatusForbidden,
+			"tidak berhak mengakses data user lain")
 	}
 
 	user, err := s.repo.FindByID(ctx, id)
@@ -60,6 +77,68 @@ func (s *UserService) Get(c *fiber.Ctx) error {
 	}
 
 	return helper.Success(c, fiber.StatusOK, "user ditemukan", user)
+}
+
+// ---------- PATCH /users/:id/role ----------
+// Dijaga middleware dengan permission role:assign.
+func (s *UserService) AssignRole(c *fiber.Ctx) error {
+	ctx, cancel := helper.RequestContext(c)
+	defer cancel()
+
+	current, ok := helper.CurrentUser(c)
+	if !ok {
+		return helper.Fail(c, fiber.StatusUnauthorized, "belum terautentikasi")
+	}
+
+	id, valid := helper.ParamID(c)
+	if !valid {
+		return helper.Fail(c, fiber.StatusBadRequest, "id harus berupa angka positif")
+	}
+
+	var req model.AssignRoleRequest
+
+	if err := c.BodyParser(&req); err != nil {
+		return helper.Fail(c, fiber.StatusBadRequest, "body harus berupa JSON yang valid")
+	}
+
+	if errs := ValidateAssignRole(current, id, req, s.perms); len(errs) > 0 {
+		return helper.FailValidation(c, errs)
+	}
+
+	result, err := s.repo.UpdateRole(ctx, id, strings.TrimSpace(req.Role))
+	if err != nil {
+		return translateError(c, err, "gagal mengubah role user")
+	}
+
+	return helper.Success(c, fiber.StatusOK, "role user berhasil diubah", result)
+}
+
+// ---------- DELETE /users/:id ----------
+func (s *UserService) Delete(c *fiber.Ctx) error {
+	ctx, cancel := helper.RequestContext(c)
+	defer cancel()
+
+	current, ok := helper.CurrentUser(c)
+	if !ok {
+		return helper.Fail(c, fiber.StatusUnauthorized, "belum terautentikasi")
+	}
+
+	id, valid := helper.ParamID(c)
+	if !valid {
+		return helper.Fail(c, fiber.StatusBadRequest, "id harus berupa angka positif")
+	}
+
+	// Punya permission menghapus tidak berarti boleh menghapus dirinya sendiri.
+	if current.UserID == id {
+		return helper.Fail(c, fiber.StatusForbidden,
+			"tidak boleh menghapus akun sendiri")
+	}
+
+	if err := s.repo.Delete(ctx, id); err != nil {
+		return translateError(c, err, "gagal menghapus user")
+	}
+
+	return helper.NoContent(c)
 }
 
 func (s *UserService) Create(c *fiber.Ctx) error {
@@ -169,23 +248,6 @@ func (s *UserService) Patch(c *fiber.Ctx) error {
 
 	return helper.Success(c, fiber.StatusOK,
 		"user berhasil diperbarui sebagian", result)
-}
-
-func (s *UserService) Delete(c *fiber.Ctx) error {
-	ctx, cancel := helper.RequestContext(c)
-	defer cancel()
-
-	id, valid := helper.ParamID(c)
-	if !valid {
-		return helper.Fail(c, fiber.StatusBadRequest,
-			"id harus berupa angka positif")
-	}
-
-	if err := s.repo.Delete(ctx, id); err != nil {
-		return translateError(c, err, "gagal menghapus user")
-	}
-
-	return helper.NoContent(c)
 }
 
 // translateError memetakan error milik repository menjadi status HTTP.
