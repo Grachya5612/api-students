@@ -63,3 +63,9 @@ func ParseListQuery(c *fiber.Ctx) model.ListQuery {
 
 	return q
 }
+
+// RequestID mengambil request_id dari Locals yang diset middleware requestid.
+func RequestID(c *fiber.Ctx) string {
+	requestID, _ := c.Locals("requestid").(string)
+	return requestID
+}
