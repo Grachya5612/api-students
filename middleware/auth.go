@@ -20,8 +20,7 @@ func RequireAuth(jwtManager *helper.JWTManager) fiber.Handler {
 		if err != nil {
 			// WWW-Authenticate adalah header baku yang menyertai 401.
 			c.Set("WWW-Authenticate", `Bearer realm="api"`)
-			return helper.Fail(c, fiber.StatusUnauthorized,
-				"header Authorization tidak ada atau salah bentuk")
+			return helper.Unauthorized("header Authorization tidak ada atau salah bentuk")
 		}
 
 		authUser, err := jwtManager.Parse(token)
@@ -31,9 +30,9 @@ func RequireAuth(jwtManager *helper.JWTManager) fiber.Handler {
 			// Membedakan "kedaluwarsa" dari "tidak valid" aman dilakukan:
 			// client memang perlu tahu kapan harus memanggil /auth/refresh.
 			if errors.Is(err, helper.ErrExpiredToken) {
-				return helper.Fail(c, fiber.StatusUnauthorized, "access token kedaluwarsa")
+				return helper.Unauthorized("access token kedaluwarsa")
 			}
-			return helper.Fail(c, fiber.StatusUnauthorized, "access token tidak valid")
+			return helper.Unauthorized("access token tidak valid")
 		}
 
 		c.Locals(helper.LocalsAuthUser, authUser)
@@ -98,11 +97,7 @@ func LoginRateLimiter() fiber.Handler {
         if state.count > limit {
             c.Set("Retry-After", "60")
 
-            return helper.Fail(
-                c,
-                fiber.StatusTooManyRequests,
-                "terlalu banyak percobaan login, coba lagi dalam satu menit",
-            )
+            return helper.TooManyRequests("terlalu banyak percobaan login, coba lagi dalam satu menit")
         }
 
         return c.Next()

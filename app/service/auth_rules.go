@@ -3,50 +3,12 @@ package service
 import (
     "strings"
     "unicode"
- 
-    "api-students/app/model"
 )
 const minPasswordLength = 8
  
-func ValidateRegister(req model.RegisterRequest) map[string]string {
-    errs := map[string]string{}
- 
-    username := strings.TrimSpace(req.Username)
-    switch {
-    case username == "":
-        errs["username"] = "wajib diisi"
-    case len(username) < 3:
-        errs["username"] = "minimal 3 karakter"
-    case !isValidUsername(username):
-        errs["username"] = "hanya boleh huruf, angka, titik, dan garis bawah"
-    }
- 
-    if !isValidEmail(req.Email) {
-        errs["email"] = "format email tidak valid"
-    }
- 
-    if msg := checkPasswordStrength(req.Password); msg != "" {
-        errs["password"] = msg
-    }
- 
-    return errs
-}
- 
-// ValidateLogin hanya memeriksa kelengkapan, BUKAN kekuatan password.
-// Aturan kekuatan tidak diberlakukan di sini karena password lama
-// mungkin dibuat sebelum aturannya berubah.
-func ValidateLogin(req model.LoginRequest) map[string]string {
-    errs := map[string]string{}
- 
-    if strings.TrimSpace(req.Username) == "" {
-        errs["username"] = "wajib diisi"
-    }
-    if req.Password == "" {
-        errs["password"] = "wajib diisi"
-    }
- 
-    return errs
-}
+// Validasi Register dan Login sudah dipindahkan ke tag struct (validate:"...") 
+// di app/model/auth.go. Fungsi ValidateRegister dan ValidateLogin dihapus.
+// Gunakan helper.ValidateStruct(req) sebagai pengganti.
  
 func checkPasswordStrength(password string) string {
     if len(password) < minPasswordLength {

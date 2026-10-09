@@ -1,9 +1,5 @@
 BEGIN;
 
--- =========================================================
--- 1. Tambahkan permission untuk resource students
--- =========================================================
-
 INSERT INTO permissions (name, description)
 VALUES
     ('student:list', 'Melihat daftar data student'),
@@ -12,11 +8,6 @@ VALUES
     ('student:update:any', 'Mengubah data student milik siapa pun'),
     ('student:delete', 'Menghapus data student')
 ON CONFLICT (name) DO NOTHING;
-
-
--- =========================================================
--- 2. Pasangkan permission ke role yang sesuai
--- =========================================================
 
 INSERT INTO role_permissions (role_name, permission_name)
 VALUES
@@ -33,18 +24,8 @@ VALUES
     ('admin', 'student:delete')
 ON CONFLICT DO NOTHING;
 
-
--- =========================================================
--- 3. Tambahkan owner_id ke students
--- =========================================================
-
 ALTER TABLE students
 ADD COLUMN IF NOT EXISTS owner_id INTEGER;
-
-
--- =========================================================
--- 4. Hubungkan owner_id dengan users.id
--- =========================================================
 
 ALTER TABLE students
 ADD CONSTRAINT fk_students_owner

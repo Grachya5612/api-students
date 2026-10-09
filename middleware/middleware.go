@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"errors"
 	"log/slog"
 	"strings"
 	"time"
@@ -43,13 +44,27 @@ func RequestLogger(logger *slog.Logger) fiber.Handler {
 
 		err := c.Next()
 
-		requestID, _ := c.Locals("requestid").(string)
+		requestID := helper.RequestID(c)
+
+		// Sejak handler mengembalikan error alih-alih menulis response sendiri,
+		// status pada c.Response() BELUM terisi ketika baris ini dijalankan:
+		// ErrorHandler baru berjalan setelah seluruh rangkaian middleware selesai.
+		// Tanpa koreksi di bawah, setiap kegagalan tercatat sebagai 200.
+		status := c.Response().StatusCode()
+		if err != nil {
+			var appErr *helper.AppError
+			if errors.As(err, &appErr) {
+				status = appErr.Status
+			} else {
+				status = fiber.StatusInternalServerError
+			}
+		}
 
 		attrs := []any{
 			slog.String("request_id", requestID),
 			slog.String("method", c.Method()),
 			slog.String("path", c.Path()),
-			slog.Int("status", c.Response().StatusCode()),
+			slog.Int("status", status),
 			slog.Duration("duration", time.Since(start)),
 			slog.String("ip", c.IP()),
 		}
@@ -80,11 +95,7 @@ func RequireJSON(c *fiber.Ctx) error {
 		ct := c.Get("Content-Type")
 
 		if !strings.HasPrefix(ct, fiber.MIMEApplicationJSON) {
-			return helper.Fail(
-				c,
-				fiber.StatusUnsupportedMediaType,
-				"Content-Type harus application/json",
-			)
+			return helper.UnsupportedMediaType("Content-Type harus application/json")
 		}
 	}
 
