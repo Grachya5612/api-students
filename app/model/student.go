@@ -13,27 +13,31 @@ type Student struct {
 }
 
 // StudentCreateRequest dipakai untuk POST /students (semua field wajib)
+// Aturan validasi ditulis sebagai tag pada struct.
+// Custom validation: nimformat untuk format NIM yang sesuai domain
 type StudentCreateRequest struct {
-	NIM      string  `json:"nim"`
-	Name     string  `json:"name"`
-	Grade    float64 `json:"grade"`
+	NIM      string  `json:"nim" validate:"required,min=3,max=30,nimformat"`
+	Name     string  `json:"name" validate:"required,min=3,max=100"`
+	Grade    float64 `json:"grade" validate:"required,min=0,max=100"`
 	IsActive bool    `json:"is_active"`
 }
 
 // StudentUpdateRequest dipakai untuk PUT /students/:id (replace penuh, semua wajib)
 type StudentUpdateRequest struct {
-	NIM      string  `json:"nim"`
-	Name     string  `json:"name"`
-	Grade    float64 `json:"grade"`
+	NIM      string  `json:"nim" validate:"required,min=3,max=30,nimformat"`
+	Name     string  `json:"name" validate:"required,min=3,max=100"`
+	Grade    float64 `json:"grade" validate:"required,min=0,max=100"`
 	IsActive bool    `json:"is_active"`
 }
 
 // StudentPatchRequest dipakai untuk PATCH /students/:id (semua opsional, pakai pointer
-// supaya bisa dibedakan "field tidak dikirim" vs "field dikirim nilai kosong")
+// supaya bisa dibedakan "field tidak dikirim" vs "field dikirim nilai kosong").
+// omitnil dipilih karena ia menyatakan maksud yang sebenarnya: lewati hanya bila nil.
+// Custom validation: nimformat untuk format NIM yang sesuai domain
 type StudentPatchRequest struct {
-	NIM      *string  `json:"nim,omitempty"`
-	Name     *string  `json:"name,omitempty"`
-	Grade    *float64 `json:"grade,omitempty"`
+	NIM      *string  `json:"nim,omitempty" validate:"omitnil,min=3,max=30,nimformat"`
+	Name     *string  `json:"name,omitempty" validate:"omitnil,min=3,max=100"`
+	Grade    *float64 `json:"grade,omitempty" validate:"omitnil,min=0,max=100"`
 	IsActive *bool    `json:"is_active,omitempty"`
 }
 
@@ -77,4 +81,38 @@ type Meta struct {
 type FieldError struct {
 	Field   string `json:"field"`
 	Message string `json:"message"`
+}
+
+// ErrorResponse adalah bentuk response kegagalan yang terpusat,
+// menggantikan WebResponse untuk error. Ia memiliki code dan request_id
+// yang tidak ada pada WebResponse.
+type ErrorResponse struct {
+	Success   bool              `json:"success"`
+	Code      string            `json:"code"`
+	Message   string            `json:"message"`
+	Fields    map[string]string `json:"fields,omitempty"`
+	RequestID string            `json:"request_id,omitempty"`
+}
+
+// Cursor menandai posisi dalam keyset pagination.
+// Menyertakan kedua field (created_at, id) untuk membandingkan secara unik.
+type Cursor struct {
+	CreatedAt time.Time
+	ID        int
+}
+
+// CursorQuery menyimpan parameter query untuk keyset pagination.
+type CursorQuery struct {
+	After    *Cursor
+	Limit    int
+	Search   string
+	IsActive *bool
+}
+
+// CursorMeta menggantikan Meta pada endpoint yang memakai cursor.
+// Tidak ada Total dan TotalPages karena keduanya memerlukan COUNT(*).
+type CursorMeta struct {
+	Limit      int    `json:"limit"`
+	NextCursor string `json:"next_cursor,omitempty"`
+	HasMore    bool   `json:"has_more"`
 }
