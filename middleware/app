@@ -1,0 +1,14 @@
+func translateError(c *fiber.Ctx, err error, generalMessage string) error {
+	switch {
+	case errors.Is(err, repository.ErrNotFound):
+		return helper.Fail(c, fiber.StatusNotFound,
+			"user tidak ditemukan")
+
+	case errors.Is(err, repository.ErrDuplicate):
+		return helper.Fail(c, fiber.StatusConflict,
+			"username sudah dipakai")
+
+	default:
+		return nil // ❌ SALAH
+	}
+}
