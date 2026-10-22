@@ -60,6 +60,10 @@ func main() {
 	tokenRepository := repository.NewTokenRepository(pool)
 	roleRepository := repository.NewRoleRepository(pool)
 	studentRepository := repository.NewStudentRepository(pool)
+	courseRepository := repository.NewCourseRepository(pool)
+	txManager := repository.NewTxManager(pool)
+	supervisionRepository := repository.NewSupervisionRepository(pool)
+	supervisionService := service.NewSupervisionService(supervisionRepository, txManager)
 
 	// Pemetaan role ke permission dibaca SEKALI saat aplikasi menyala.
 	// Konsekuensinya: perubahan hak akses di database baru berlaku setelah
@@ -91,6 +95,8 @@ func main() {
 		permissions,
 	)
 
+	courseService := service.NewCourseService(courseRepository, txManager)
+
 	authService := service.NewAuthService(
 		userRepository,
 		tokenRepository,
@@ -109,8 +115,10 @@ func main() {
 			JWT:            jwtManager,
 			Permissions:    permissions,
 			UserService:    userService,
-			StudentService: studentService,
 			AuthService:    authService,
+			StudentService: studentService,
+			SupervisionService: supervisionService,
+			CourseService:  courseService,
 		},
 	)
 
@@ -155,3 +163,4 @@ func main() {
 
 	logger.Info("server berhenti dengan rapi")
 }
+

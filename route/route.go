@@ -19,6 +19,8 @@ type Dependencies struct {
 	UserService    *service.UserService
 	StudentService *service.StudentService
 	AuthService    *service.AuthService
+	CourseService  *service.CourseService
+	SupervisionService *service.SupervisionService
 }
 
 func Register(app *fiber.App, deps Dependencies) {
@@ -38,7 +40,7 @@ func Register(app *fiber.App, deps Dependencies) {
 		deps.AuthService.Me,
 	)
 
-	// --- wajib login, hak akses diperiksa per endpoint ---
+	// --- wajib login ---
 	users := api.Group("/users",
 		middleware.RequireJSON,
 		middleware.RequireAuth(deps.JWT),
@@ -46,7 +48,6 @@ func Register(app *fiber.App, deps Dependencies) {
 
 	perms := deps.Permissions
 
-	// Hak dapat diputuskan tanpa melihat data -> middleware.
 	users.Get("/",
 		middleware.RequirePermission(perms, "user:list"),
 		deps.UserService.List,
@@ -67,6 +68,7 @@ func Register(app *fiber.App, deps Dependencies) {
 		deps.UserService.AssignRole,
 	)
 
+	// --- mahasiswa ---
 	students := api.Group("/students",
 		middleware.RequireJSON,
 		middleware.RequireAuth(deps.JWT),
@@ -87,22 +89,56 @@ func Register(app *fiber.App, deps Dependencies) {
 		deps.StudentService.Delete,
 	)
 
-	students.Get("/:id",
-		deps.StudentService.Get,
-	)
+	students.Get("/:id", deps.StudentService.Get)
+	students.Put("/:id", deps.StudentService.Replace)
+	students.Patch("/:id", deps.StudentService.Patch)
 
-	students.Put("/:id",
-		deps.StudentService.Replace,
-	)
-
-	students.Patch("/:id",
-		deps.StudentService.Patch,
-	)
-
-	// Hak bergantung pada kepemilikan data -> diperiksa di service.
+	// Hak akses berdasarkan kepemilikan diperiksa di service.
 	users.Get("/:id", deps.UserService.Get)
 	users.Put("/:id", deps.UserService.Replace)
 	users.Patch("/:id", deps.UserService.Patch)
+
+	// --- kelas dan KRS ---
+	courses := api.Group("/courses",
+		middleware.RequireJSON,
+		middleware.RequireAuth(deps.JWT),
+	)
+
+	// "/mine" didaftarkan sebelum "/:id".
+	courses.Get("/", deps.CourseService.List)
+	courses.Get("/mine", deps.CourseService.Mine)
+	courses.Get("/:id", deps.CourseService.Get)
+	courses.Post("/:id/enroll", deps.CourseService.Enroll)
+	courses.Delete("/:id/enroll", deps.CourseService.Drop)
+	courses.Patch("/:id",
+		middleware.RequirePermission(perms, "course:manage"),
+		deps.CourseService.UpdateQuota,
+	)
+
+		// --- pembimbing tugas akhir ---
+	supervisors := api.Group("/supervisors",
+		middleware.RequireJSON,
+		middleware.RequireAuth(deps.JWT))
+	supervisors.Post("/:id/assign",
+		middleware.RequirePermission(perms, "supervision:manage"),
+		deps.SupervisionService.Assign)
+	supervisors.Patch("/:id",
+		middleware.RequirePermission(perms, "supervision:manage"),
+		deps.SupervisionService.UpdateQuota)
+
+	supervisions := api.Group("/supervisions",
+		middleware.RequireJSON,
+		middleware.RequireAuth(deps.JWT))
+	supervisions.Post("/switch",
+		middleware.RequirePermission(perms, "supervision:manage"),
+		deps.SupervisionService.Switch)
+
+	// --- pertukaran kelas ---
+	enrollments := api.Group("/enrollments",
+		middleware.RequireJSON,
+		middleware.RequireAuth(deps.JWT),
+	)
+	enrollments.Post("/swap", deps.CourseService.Swap)
 }
 
 func healthCheck(pool *pgxpool.Pool) fiber.Handler {
@@ -114,7 +150,9 @@ func healthCheck(pool *pgxpool.Pool) fiber.Handler {
 		defer cancel()
 
 		if err := pool.Ping(ctx); err != nil {
-			return helper.ServiceUnavailable("database tidak terhubung")
+			return helper.ServiceUnavailable(
+				"database tidak terhubung",
+			)
 		}
 
 		return helper.Success(
