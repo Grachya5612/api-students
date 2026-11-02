@@ -1,0 +1,17 @@
+.env
+*.exe
+*.exe~
+*.test
+*.out
+body.json
+bad.txt
+logs/ 
+.env 
+# tambahan modul-10
+*.exe
+bukti/
+body_*.json
+explain_*.js
+latihan.js
+reset*.sql
+*.log
