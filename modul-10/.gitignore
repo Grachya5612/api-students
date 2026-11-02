@@ -1,0 +1,9 @@
+.env
+*.exe
+*.exe~
+*.test
+*.out
+body.json
+bad.txt
+logs/ 
+.env 
