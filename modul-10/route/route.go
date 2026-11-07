@@ -14,17 +14,18 @@ import (
 )
 
 type Dependencies struct {
-	Pool               *pgxpool.Pool
-	JWT                *helper.JWTManager
-	Permissions        *helper.PermissionSet
-	UserService        *service.UserService
-	StudentService     *service.StudentService
-	AuthService        *service.AuthService
-	CourseService      *service.CourseService
-	ReviewService      *service.ReviewService
-	SupervisionService *service.SupervisionService
-	MongoClient        *mongo.Client
-	PortfolioService   *service.PortfolioService
+	Pool                *pgxpool.Pool
+	JWT                 *helper.JWTManager
+	Permissions         *helper.PermissionSet
+	UserService         *service.UserService
+	StudentService      *service.StudentService
+	AuthService         *service.AuthService
+	CourseService       *service.CourseService
+	ReviewService       *service.ReviewService
+	SupervisionService  *service.SupervisionService
+	MongoClient         *mongo.Client
+	PortfolioService    *service.PortfolioService
+	NotificationService *service.NotificationService
 }
 
 func Register(app *fiber.App, deps Dependencies) {
@@ -192,6 +193,22 @@ func Register(app *fiber.App, deps Dependencies) {
 		middleware.RequireAuth(deps.JWT),
 	)
 	enrollments.Post("/swap", deps.CourseService.Swap)
+
+	// --- notifikasi (diisi oleh worker, dibaca lewat API) ---
+	notifications := api.Group("/notifications",
+		middleware.RequireJSON,
+		middleware.RequireAuth(deps.JWT),
+	)
+	notifications.Get("/mine", deps.NotificationService.Mine)
+
+	admin := api.Group("/admin",
+		middleware.RequireJSON,
+		middleware.RequireAuth(deps.JWT),
+	)
+	admin.Get("/queue",
+		middleware.RequirePermission(perms, "queue:monitor"),
+		deps.NotificationService.Monitor,
+	)
 }
 
 // healthCheck memeriksa DUA database. Aplikasi dianggap sehat hanya
@@ -200,12 +217,15 @@ func healthCheck(pool *pgxpool.Pool, mongoClient *mongo.Client) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		ctx, cancel := context.WithTimeout(c.UserContext(), 2*time.Second)
 		defer cancel()
+
 		if err := pool.Ping(ctx); err != nil {
 			return helper.ServiceUnavailable("PostgreSQL tidak dapat dihubungi")
 		}
+
 		if err := mongoClient.Ping(ctx, nil); err != nil {
 			return helper.ServiceUnavailable("MongoDB tidak dapat dihubungi")
 		}
+
 		return helper.Success(c, fiber.StatusOK, "server, PostgreSQL, dan MongoDB berjalan", nil)
 	}
 }
