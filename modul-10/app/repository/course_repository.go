@@ -28,6 +28,8 @@ type CourseRepository interface {
 	LockStudent(ctx context.Context, userID int) error
 	LockCourses(ctx context.Context, ids ...int) error
 	SumCredits(ctx context.Context, userID int) (int, error)
+
+	EnrolledUserIDs(ctx context.Context, courseID int) ([]int, error)
 }
 
 var (
@@ -109,8 +111,7 @@ func (r *coursePostgresRepository) FindByStudent(ctx context.Context, userID int
 	`, userID))
 }
 
-// IsEnrolled dipakai layer lain — misalnya layanan ulasan di MongoDB — yang
-// perlu tahu apakah seorang mahasiswa terdaftar di sebuah kelas.
+// IsEnrolled memeriksa apakah mahasiswa sudah terdaftar di kelas tersebut.
 func (r *coursePostgresRepository) IsEnrolled(ctx context.Context, courseID, userID int) (bool, error) {
 	var exists bool
 	err := r.db.QueryRow(ctx,
@@ -278,4 +279,23 @@ func (r *coursePostgresRepository) UpdateQuota(ctx context.Context, id, quota, v
 		return model.Course{}, ErrVersionConflict
 	}
 	return model.Course{}, ErrQuotaBelowFilled
+}
+
+func (r *coursePostgresRepository) EnrolledUserIDs(ctx context.Context, courseID int) ([]int, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT user_id FROM enrollments WHERE course_id = $1 ORDER BY user_id`, courseID)
+	if err != nil {
+		return nil, fmt.Errorf("mengambil peserta: %w", err)
+	}
+	defer rows.Close()
+
+	ids := []int{}
+	for rows.Next() {
+		var id int
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("membaca peserta: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
