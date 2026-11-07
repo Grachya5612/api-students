@@ -27,3 +27,11 @@ type UpdateQuotaRequest struct {
 	Quota   int `json:"quota" validate:"required,min=1,max=500"`
 	Version int `json:"version" validate:"required,min=1"`
 }
+
+// QuotaChangedEvent adalah isi payload event course.quota_changed di outbox.
+type QuotaChangedEvent struct {
+	CourseID int    `json:"course_id"`
+	Code     string `json:"code"`
+	Name     string `json:"name"`
+	Quota    int    `json:"quota"`
+}
