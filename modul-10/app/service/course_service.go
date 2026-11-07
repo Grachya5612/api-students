@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"strconv"
 
@@ -15,11 +16,16 @@ var errCreditLimit = errors.New("batas SKS semester terlampaui")
 
 type CourseService struct {
 	courses repository.CourseRepository
+	outbox  repository.OutboxRepository
 	tx      *repository.TxManager
 }
 
-func NewCourseService(courses repository.CourseRepository, tx *repository.TxManager) *CourseService {
-	return &CourseService{courses: courses, tx: tx}
+func NewCourseService(
+	courses repository.CourseRepository,
+	outbox repository.OutboxRepository,
+	tx *repository.TxManager,
+) *CourseService {
+	return &CourseService{courses: courses, outbox: outbox, tx: tx}
 }
 
 // ---------- GET /courses ----------
@@ -127,8 +133,7 @@ func (s *CourseService) Enroll(c *fiber.Ctx) error {
 
 		// 2. Periksa dulu apakah sudah terdaftar, agar kode error-nya
 		// tepat (ALREADY_ENROLLED) walau kelas penuh atau SKS sudah habis.
-		course, err := repo.FindByID(ctx, courseID)
-		if err != nil {
+		if _, err := repo.FindByID(ctx, courseID); err != nil {
 			return err
 		}
 
@@ -140,26 +145,30 @@ func (s *CourseService) Enroll(c *fiber.Ctx) error {
 			return repository.ErrDuplicate
 		}
 
-		// 3. Periksa batas SKS. Aman, karena LockStudent menahan request
-		// lain milik mahasiswa ini.
-		taken, err := repo.SumCredits(ctx, current.UserID)
-		if err != nil {
-			return err
-		}
-		if !WithinCreditLimit(taken, course.Credits) {
-			return errCreditLimit
-		}
-
-		// 4. Ambil satu kursi secara atomik.
+		// 3. Ambil satu kursi secara atomik.
 		enrolled, err = repo.IncrementEnrolled(ctx, courseID)
 		if err != nil {
 			return err
 		}
 
-		// 5. Catat pendaftarannya. Bila gagal, rollback juga membatalkan
-		// penambahan kursi pada langkah 4.
+		// 4. Catat event-nya ke outbox, memakai transaction yang sama.
+		// Urutan di dalam transaction tidak mengubah hasil akhir: bila
+		// langkah 5 gagal, catatan ini ikut dibatalkan bersama
+		// penambahan kursi pada langkah 3.
+		if err := s.outbox.Insert(ctx, model.EventEnrollmentCreated, model.EnrollmentEvent{
+			UserID:     current.UserID,
+			CourseID:   enrolled.ID,
+			CourseCode: enrolled.Code,
+			CourseName: enrolled.Name,
+		}); err != nil {
+			return err
+		}
+
+		// 5. Catat pendaftarannya. Bila ternyata sudah terdaftar, error
+		// di sini membatalkan seluruh langkah sebelumnya.
 		return repo.InsertEnrollment(ctx, courseID, current.UserID)
 	})
+
 	if err != nil {
 		return translateCourseError(err)
 	}
@@ -193,8 +202,18 @@ func (s *CourseService) Drop(c *fiber.Ctx) error {
 		if err := repo.DeleteEnrollment(ctx, courseID, current.UserID); err != nil {
 			return err
 		}
-		_, err := repo.DecrementEnrolled(ctx, courseID)
-		return err
+
+		course, err := repo.DecrementEnrolled(ctx, courseID)
+		if err != nil {
+			return err
+		}
+
+		return s.outbox.WithTx(tx).Insert(ctx, model.EventEnrollmentDropped, model.EnrollmentEvent{
+			UserID:     current.UserID,
+			CourseID:   course.ID,
+			CourseCode: course.Code,
+			CourseName: course.Name,
+		})
 	})
 	if err != nil {
 		return translateCourseError(err)
@@ -267,7 +286,7 @@ func (s *CourseService) Swap(c *fiber.Ctx) error {
 	}
 
 	var joined model.Course
-	err := s.tx.WithTx(ctx, func(tx repository.DBTX) error {
+	if err := s.tx.WithTx(ctx, func(tx repository.DBTX) error {
 		repo := s.courses.WithTx(tx)
 
 		if err := repo.LockStudent(ctx, current.UserID); err != nil {
@@ -307,11 +326,21 @@ func (s *CourseService) Swap(c *fiber.Ctx) error {
 		if err != nil {
 			return err
 		}
-
-		return repo.InsertEnrollment(ctx, req.ToCourseID, current.UserID)
-	})
-	if err != nil {
-		return translateCourseError(err)
+		if err := repo.InsertEnrollment(ctx, req.ToCourseID, current.UserID); err != nil {
+			return err
+		}
+		// Satu event "pindah", bukan dua event "keluar" dan "masuk".
+		// Mahasiswa melakukan satu tindakan, maka ia menerima satu notifikasi.
+		return s.outbox.WithTx(tx).Insert(ctx, model.EventEnrollmentSwapped, model.EnrollmentEvent{
+			UserID:         current.UserID,
+			CourseID:       to.ID,
+			CourseCode:     to.Code,
+			CourseName:     to.Name,
+			FromCourseCode: from.Code,
+			FromCourseName: from.Name,
+		})
+	}); err != nil {
+		return err
 	}
 
 	return helper.Success(c, fiber.StatusOK, "berhasil pindah kelas", joined)
@@ -336,11 +365,28 @@ func (s *CourseService) UpdateQuota(c *fiber.Ctx) error {
 		return helper.Validation(errs)
 	}
 
-	// Satu pernyataan UPDATE saja, sehingga tidak perlu WithTx.
-	updated, err := s.courses.UpdateQuota(ctx, id, req.Quota, req.Version)
+	updated, err := s.ChangeQuota(ctx, id, req.Quota, req.Version)
 	if err != nil {
 		return translateCourseError(err)
 	}
 
 	return helper.Success(c, fiber.StatusOK, "kuota berhasil diubah", updated)
+}
+
+func (s *CourseService) ChangeQuota(ctx context.Context, id, quota, version int) (model.Course, error) {
+	var updated model.Course
+	err := s.tx.WithTx(ctx, func(tx repository.DBTX) error {
+		var err error
+		updated, err = s.courses.WithTx(tx).UpdateQuota(ctx, id, quota, version)
+		if err != nil {
+			return err
+		}
+		return s.outbox.WithTx(tx).Insert(ctx, "course.quota_changed", map[string]interface{}{
+			"course_id": updated.ID,
+			"code":      updated.Code,
+			"name":      updated.Name,
+			"quota":     quota,
+		})
+	})
+	return updated, err
 }
